@@ -396,8 +396,9 @@ class Client(object):
     @classmethod
     def from_public_link(cls, public_link, folder_password='', **kwargs):
         public_link_components = parse.urlparse(public_link)
-        url = public_link_components.scheme + '://' + public_link_components.hostname
-        folder_token = public_link_components.path.split('/')[-1]       
+        base_path = public_link_components.path.split('/s/')[0]
+        url = public_link_components.scheme + '://' + public_link_components.hostname + base_path
+        folder_token = public_link_components.path.split('/')[-1]
         anon_session = cls(url, **kwargs)
         anon_session.anon_login(folder_token, folder_password=folder_password)
         return anon_session
