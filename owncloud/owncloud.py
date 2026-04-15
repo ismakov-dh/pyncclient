@@ -396,10 +396,25 @@ class Client(object):
     @classmethod
     def from_public_link(cls, public_link, folder_password='', **kwargs):
         public_link_components = parse.urlparse(public_link)
+
+        # Extract the webroot by stripping the share path.
+        # Handles both pretty URLs (/s/TOKEN) and non-pretty (/index.php/s/TOKEN),
+        # as well as subdirectory installs (e.g. /owncloud/s/TOKEN).
+        path = public_link_components.path
+        idx = path.find('/index.php/')
+        if idx != -1:
+            base_path = path[:idx]
+        elif '/s/' in path:
+            base_path = path[:path.find('/s/')]
+        else:
+            base_path = ''
+
         url = public_link_components.scheme + '://' + public_link_components.hostname
         if public_link_components.port:
-            url += ":" + public_link_components.port
-        folder_token = public_link_components.path.split('/')[-1]
+            url += ':' + str(public_link_components.port)
+        url += base_path
+
+        folder_token = path.split('/')[-1]
         anon_session = cls(url, **kwargs)
         anon_session.anon_login(folder_token, folder_password=folder_password)
         return anon_session
