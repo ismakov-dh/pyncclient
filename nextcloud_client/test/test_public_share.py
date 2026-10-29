@@ -164,6 +164,24 @@ class PublicShareTest(unittest.TestCase):
         else:
             self.assertEqual(self.server.auth_headers, [None])
 
+    def test_netrc_is_not_used_without_password(self):
+        if self.password:
+            self.skipTest('only for shares without password')
+        with tempfile.TemporaryDirectory() as home:
+            with open(os.path.join(home, '.netrc'), 'w') as f:
+                f.write('machine 127.0.0.1 login leaked password leaked\n')
+            os.chmod(os.path.join(home, '.netrc'), 0o600)
+            old = os.environ.get('NETRC')
+            os.environ['NETRC'] = os.path.join(home, '.netrc')
+            try:
+                self.client().mkdir('a')
+            finally:
+                if old is None:
+                    del os.environ['NETRC']
+                else:
+                    os.environ['NETRC'] = old
+        self.assertEqual(self.server.auth_headers, [None])
+
     def test_link_variants(self):
         base = 'http://127.0.0.1:%d' % self.server.server_port
         for link in (
@@ -173,6 +191,13 @@ class PublicShareTest(unittest.TestCase):
         ):
             self.assertTrue(self.client(link).mkdir('v'), link)
             self.server.tree.clear()
+
+    def test_ipv6_host_and_port(self):
+        client = nextcloud_client.Client.from_public_link(
+            'https://[::1]:8443/nextcloud/index.php/s/' + TOKEN)
+        self.assertEqual(client.url, 'https://[::1]:8443/nextcloud/')
+        self.assertEqual(client._webdav_url,
+                         'https://[::1]:8443/nextcloud/public.php/dav/files/' + TOKEN)
 
     def test_link_without_token_is_rejected(self):
         with self.assertRaises(ValueError):

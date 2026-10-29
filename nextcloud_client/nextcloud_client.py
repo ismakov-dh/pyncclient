@@ -406,6 +406,9 @@ class Client(object):
         if folder_password:
             # requests encodes str credentials as latin-1; the server expects utf-8
             self._session.auth = ('anonymous', folder_password.encode('utf-8'))
+        else:
+            # a no-op auth stops requests from picking credentials up from ~/.netrc
+            self._session.auth = lambda request: request
         self._public_share = True
 
         url_components = parse.urlparse(self.url)
