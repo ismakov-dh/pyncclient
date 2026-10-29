@@ -13,6 +13,7 @@ import time
 import requests
 import xml.etree.ElementTree as ET
 import os
+import re
 import math
 import six
 from six.moves.urllib import parse
@@ -344,6 +345,7 @@ class Client(object):
 
         self._capabilities = None
         self._version = None
+        self._public_share = False
 
     def login(self, user_id, password):
         """Authenticate to nextCloud.
@@ -395,26 +397,38 @@ class Client(object):
         :param folder_token: token of the public share
         :param folder_password: password of the share, empty if none. The user
             name is ignored by the server, ``anonymous`` is used.
+
+        File chunking (``OC-CHUNKED``) is not available on this endpoint:
+        ``put_file`` always uploads a public share file in a single PUT.
         """
         self._session = requests.session()
         self._session.verify = self._verify_certs
         if folder_password:
-            self._session.auth = ('anonymous', folder_password)
+            # requests encodes str credentials as latin-1; the server expects utf-8
+            self._session.auth = ('anonymous', folder_password.encode('utf-8'))
+        self._public_share = True
 
         url_components = parse.urlparse(self.url)
-        dav_path = 'public.php/dav/files/' + parse.quote(folder_token, safe='')
+        dav_path = 'public.php/dav/files/' + parse.quote(parse.unquote(folder_token), safe='')
         self._davpath = url_components.path + dav_path
         self._webdav_url = self.url + dav_path
 
     @classmethod
     def from_public_link(cls, public_link, folder_password='', **kwargs):
-        public_link_components = parse.urlparse(public_link)
-        base_path = public_link_components.path.split('/s/')[0]
-        url = public_link_components.scheme + '://' + public_link_components.hostname
-        if public_link_components.port:
-            url += ':' + str(public_link_components.port)
-        url += base_path
-        folder_token = public_link_components.path.rstrip('/').split('/')[-1]
+        """Client for a public share link.
+
+        Accepts ``<host>[/<webroot>]/s/<token>`` and
+        ``<host>[/<webroot>]/index.php/s/<token>`` (optionally followed by
+        ``/``, ``/download`` or a query string).
+        """
+        components = parse.urlparse(public_link)
+        match = re.match(r'^(.*?)(?:/index\.php)?/s/([^/?#]+)', components.path)
+        if not match:
+            raise ValueError('Not a public share link: no /s/<token> in the path')
+        base_path, folder_token = match.groups()
+
+        host = components.netloc.rsplit('@', 1)[-1]
+        url = components.scheme + '://' + host + base_path
         anon_session = cls(url, **kwargs)
         anon_session.anon_login(folder_token, folder_password=folder_password)
         return anon_session
@@ -586,7 +600,7 @@ class Client(object):
         :returns: True if the operation succeeded, False otherwise
         :raises: HTTPResponseError in case an HTTP error status was returned
         """
-        if kwargs.get('chunked', True):
+        if kwargs.get('chunked', True) and not self._public_share:
             return self._put_file_chunked(
                 remote_path,
                 local_source_file,

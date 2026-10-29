@@ -5,7 +5,9 @@ Changelog
 ---
 - Public share links (`anon_login`, `from_public_link`) use `public.php/dav/files/<token>`
   instead of the legacy `public.php/webdav`, which refuses MKCOL/PUT on Nextcloud 35 with a web root
-- Share password is sent as ``anonymous:<password>``, no credentials for shares without password
+- Share password is sent as ``anonymous:<password>`` (utf-8), no credentials for shares without password
+- ``from_public_link`` understands ``/index.php/s/<token>``, ``/s/<token>/download``, query strings, ports
+- ``put_file`` on a public share never uses ``OC-CHUNKED`` chunking (not supported by ``dav/files``)
 
 0.7
 ---

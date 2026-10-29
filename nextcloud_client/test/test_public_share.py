@@ -12,8 +12,6 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import requests
-
 import nextcloud_client
 
 WEBROOT = '/nextcloud'
@@ -30,8 +28,28 @@ class FakePublicDav(BaseHTTPRequestHandler):
         self.send_header('Content-Length', '0')
         self.end_headers()
 
+    def _multistatus(self, new, rel):
+        if rel != '/' and rel not in self.server.tree:
+            return self._reply(404)
+        entries = [rel] + sorted(
+            p for p in self.server.tree
+            if p != rel and p.startswith(rel) and '/' not in p[len(rel):].rstrip('/'))
+        body = '<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">'
+        for e in entries:
+            body += ('<d:response><d:href>%s</d:href><d:propstat><d:prop>'
+                     '<d:resourcetype/></d:prop>'
+                     '<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
+                     % (new[:-1] + e))
+        body = (body + '</d:multistatus>').encode()
+        self.send_response(207)
+        self.send_header('Content-Type', 'application/xml')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _handle(self):
         self.server.requests.append((self.command, self.path))
+        self.server.auth_headers.append(self.headers.get('Authorization'))
         length = int(self.headers.get('Content-Length') or 0)
         body = self.rfile.read(length) if length else b''
 
@@ -45,11 +63,13 @@ class FakePublicDav(BaseHTTPRequestHandler):
 
         if self.server.password:
             expected = 'Basic ' + base64.b64encode(
-                ('anonymous:' + self.server.password).encode()).decode()
+                ('anonymous:' + self.server.password).encode('utf-8')).decode()
             if self.headers.get('Authorization') != expected:
                 return self._reply(401)
 
         rel = self.path[len(new) - 1:]
+        if self.command == 'PROPFIND':
+            return self._multistatus(new, rel)
         if self.command == 'MKCOL':
             if rel in self.server.tree:
                 return self._reply(405)
@@ -73,6 +93,7 @@ class PublicShareTest(unittest.TestCase):
         self.server = HTTPServer(('127.0.0.1', 0), FakePublicDav)
         self.server.requests = []
         self.server.tree = {}
+        self.server.auth_headers = []
         self.server.password = self.password
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
@@ -117,20 +138,55 @@ class PublicShareTest(unittest.TestCase):
         client = self.client(self.link + '/')
         self.assertTrue(client.mkdir('a'))
 
-    def test_legacy_endpoint_still_refuses_writes(self):
-        # documents why the endpoint changed: same server, legacy URL -> 403
-        client = nextcloud_client.Client(
-            'http://127.0.0.1:%d%s/' % (self.server.server_port, WEBROOT))
-        client._session = requests.session()
-        client._webdav_url = client.url + 'public.php/webdav'
-        client._davpath = WEBROOT + '/public.php/webdav'
-        with self.assertRaises(nextcloud_client.HTTPResponseError) as ctx:
-            client.mkdir('a')
-        self.assertEqual(ctx.exception.status_code, 403)
+    def test_list_strips_dav_path(self):
+        client = self.client()
+        client.mkdir('a')
+        client.mkdir('a/b')
+        self.assertEqual([f.path for f in client.list('/')], ['/a/'])
+        self.assertEqual([f.path for f in client.list('a')], ['/a/b/'])
+
+    def test_large_file_is_not_chunked(self):
+        client = self.client()
+        client.mkdir('a')
+        with tempfile.TemporaryDirectory() as tmp:
+            local = os.path.join(tmp, 'big.zip')
+            with open(local, 'wb') as f:
+                f.write(b'x' * (11 * 1024 * 1024))
+            self.assertTrue(client.put_file('a/big.zip', local))  # chunked=True is the default
+        self.assertEqual(len(self.server.tree['/a/big.zip']), 11 * 1024 * 1024)
+        for _, path in self.server.requests:
+            self.assertNotIn('chunking', path)
+
+    def test_authorization_header(self):
+        self.client().mkdir('a')
+        if self.password:
+            self.assertTrue(self.server.auth_headers[-1].startswith('Basic '))
+        else:
+            self.assertEqual(self.server.auth_headers, [None])
+
+    def test_link_variants(self):
+        base = 'http://127.0.0.1:%d' % self.server.server_port
+        for link in (
+            base + WEBROOT + '/index.php/s/' + TOKEN,
+            base + WEBROOT + '/s/' + TOKEN + '/download',
+            base + WEBROOT + '/s/' + TOKEN + '?path=%2Fa',
+        ):
+            self.assertTrue(self.client(link).mkdir('v'), link)
+            self.server.tree.clear()
+
+    def test_link_without_token_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.client('http://127.0.0.1/nextcloud/index.php/login')
 
 
 class PasswordProtectedPublicShareTest(PublicShareTest):
     password = PASSWORD
+
+    def test_non_latin1_password(self):
+        self.server.password = u'\u043f\u0430\u0440\u043e\u043b\u044c'
+        client = nextcloud_client.Client.from_public_link(
+            self.link, folder_password=self.server.password)
+        self.assertTrue(client.mkdir('a'))
 
     def test_wrong_password_is_401(self):
         client = nextcloud_client.Client.from_public_link(
