@@ -385,20 +385,36 @@ class Client(object):
         return True
 
     def anon_login(self, folder_token, folder_password=''):
+        """Access a public share link.
+
+        Uses the ``public.php/dav/files/<token>`` endpoint. The legacy
+        ``public.php/webdav`` endpoint is not usable for writing on Nextcloud
+        servers installed under a sub-path (e.g. ``/nextcloud``): MKCOL and PUT
+        on it return 403 (Nextcloud >= 35 checked).
+
+        :param folder_token: token of the public share
+        :param folder_password: password of the share, empty if none. The user
+            name is ignored by the server, ``anonymous`` is used.
+        """
         self._session = requests.session()
         self._session.verify = self._verify_certs
-        self._session.auth = (folder_token, folder_password)
+        if folder_password:
+            self._session.auth = ('anonymous', folder_password)
 
         url_components = parse.urlparse(self.url)
-        self._davpath = url_components.path + 'public.php/webdav'
-        self._webdav_url = self.url + 'public.php/webdav'
-    
+        dav_path = 'public.php/dav/files/' + parse.quote(folder_token, safe='')
+        self._davpath = url_components.path + dav_path
+        self._webdav_url = self.url + dav_path
+
     @classmethod
     def from_public_link(cls, public_link, folder_password='', **kwargs):
         public_link_components = parse.urlparse(public_link)
         base_path = public_link_components.path.split('/s/')[0]
-        url = public_link_components.scheme + '://' + public_link_components.hostname + base_path
-        folder_token = public_link_components.path.split('/')[-1]
+        url = public_link_components.scheme + '://' + public_link_components.hostname
+        if public_link_components.port:
+            url += ':' + str(public_link_components.port)
+        url += base_path
+        folder_token = public_link_components.path.rstrip('/').split('/')[-1]
         anon_session = cls(url, **kwargs)
         anon_session.anon_login(folder_token, folder_password=folder_password)
         return anon_session
